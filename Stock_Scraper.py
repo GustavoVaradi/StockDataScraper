@@ -7,17 +7,20 @@ from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from tqdm import tqdm
 
 # Configurations
 OUTPUT_FILE = "stock_data.csv"
 LOG_FILE = "url_status_log.csv"
 TICKER_FILE = "acoes-listadas-b3.csv"
-BASE_URL = "https://analitica.auvp.com.br/ativos/"
+BASE_URL = "https://analitica.auvp.com.br/acoes/"
 XPATHS = {
-    "price": '/html/body/div/main/div[3]/div/div[2]/div[2]/div[2]/span',
-    "LPA": '/html/body/div/main/div[4]/div/div[2]/div[3]/div[1]/div/div[4]/div[2]/span',
-    "VPA": '/html/body/div/main/div[4]/div/div[2]/div[3]/div[1]/div/div[5]/div[2]/span'
+    "price": '//*[@id="asset-header"]/div/div[1]/div[2]/div[1]/span',
+    "LPA": '//*[@id="PAGE_CONTAINER"]/main/div[3]/div/div[2]/div[2]/div/div[2]/div[1]/div/div[4]/div[2]/span',
+    "VPA": '//*[@id="PAGE_CONTAINER"]/main/div[3]/div/div[2]/div[2]/div/div[2]/div[1]/div/div[5]/div[2]/span'
 }
 
 def initialize_csv(file_path, header):
@@ -34,7 +37,6 @@ def log_status(url, status_code, status):
     with open(LOG_FILE, mode="a", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([timestamp, url, status_code, status])
-    print(f"{timestamp} - {url} - Status: {status_code} ({status})")
 
 def check_url_status(url):
     """Checks if a URL is accessible."""
@@ -51,24 +53,27 @@ def extract_data(driver, ticker, url):
         driver.get(url)
         
         def get_float(xpath):
-            raw_text = driver.find_element(By.XPATH, xpath).text.replace(',', '.')
+            element = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, xpath))
+            )
+            raw_text = element.text.replace(',', '.')
             return float(raw_text.replace('R$ ', '')) if "-" not in raw_text else 0
         
         price = get_float(XPATHS["price"])
         lpa = get_float(XPATHS["LPA"])
         vpa = get_float(XPATHS["VPA"])
+        real_price = (22.5 * lpa * vpa) ** (1/2)
         
         with open(OUTPUT_FILE, mode="a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
-            writer.writerow([ticker, price, lpa, vpa])
+            writer.writerow([ticker, price, lpa, vpa, f"{real_price:.2f}"])
         
-        print(f"✅ Data saved for {ticker}: Price={price}, LPA={lpa}, VPA={vpa}")
     except Exception as e:
         print(f"❌ Error extracting data for {ticker}: {e}")
 
 def main():
     """Main function to run the data extraction process."""
-    initialize_csv(OUTPUT_FILE, ["Ticker", "Price", "LPA", "VPA"])
+    initialize_csv(OUTPUT_FILE, ["Ticker", "Price", "LPA", "VPA", "Real Price"])
     initialize_csv(LOG_FILE, ["Timestamp", "URL", "Status Code", "Status"])
     
     df_tickers = pd.read_csv(TICKER_FILE)
@@ -79,7 +84,7 @@ def main():
     options.add_argument("--headless")
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
-    for url in urls:
+    for url in tqdm(urls, desc="Processing URLs", unit="url"):
         ticker = url.split("/")[-1].upper()
         status_code, status = check_url_status(url)
         log_status(url, status_code, status)
@@ -91,8 +96,7 @@ def main():
 
     # Read the CSV file and calculate the 'real price'
     df = pd.read_csv(OUTPUT_FILE)
-    df['real price'] = np.sqrt(22.5 * df['LPA'] * df['VPA'])
-    df.to_csv(OUTPUT_FILE, index=False)
+    df.to_csv(OUTPUT_FILE, decimal=',', sep=';', index=False)
     print("📈 'Real price' calculated and saved in 'stock_data.csv'")
 
 if __name__ == "__main__":
